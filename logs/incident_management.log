@@ -1,0 +1,5 @@
+2025-10-19 01:20:30,275 [INFO] incident_management: configured
+2025-10-19 01:20:30,307 [INFO] incident_management: START
+2025-10-19 01:21:47,736 [INFO] incident_management: Created datetime variants for columns: CREATED
+2025-10-19 01:21:47,829 [INFO] incident_management: Created datetime variants for columns: RESOLVED
+2025-10-19 01:21:47,894 [INFO] incident_management: Created datetime variants for columns: CLOSED

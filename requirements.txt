@@ -1,0 +1,33 @@
+# ===============================
+#  Python requirements.txt
+#  Auto-generated from imports
+# ===============================
+
+# Data analysis and computation
+numpy
+pandas
+matplotlib
+numba
+fastparquet
+
+# Text processing and cleaning
+unidecode
+tabulate
+pyyaml
+
+# Custom/less common libraries
+narwhals  # if not found on PyPI, replace or remove
+
+# Logging and concurrency (built-in modules, no pip install)
+# logging
+# concurrent.futures
+# contextlib
+# collections
+# itertools
+# re
+# os
+# sys
+# json
+# datetime
+# inspect
+# ast

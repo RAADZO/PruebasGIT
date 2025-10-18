@@ -726,10 +726,12 @@ def clean_headers(df, logger=logger):
         raise e
 
 
-def create_dt_time_wvariants(df_original, logger=logger):
+def create_dt_time_wvariants(df_original, cols, logger=logger):
     try:
         df = df_original.copy()
         date_cols = df.select_dtypes(include=['datetime']).columns.tolist()
+        if cols:
+            date_cols = [col for col in date_cols if col in cols]
         for date_col in date_cols:
             # ignore updated
             if date_col in ['UPDATED', 'OUTAGE_BEGIN', 'OUTAGE_END']:
@@ -4576,3 +4578,33 @@ def flag_PARENT_change(df):
     )
 
     return result_df
+
+
+def marks(df):
+    df["_ORDER"] = df.groupby("NUMBER").cumcount()
+    df["_SIZE"] = df.groupby("NUMBER")["NUMBER"].transform("size")
+    df["_LAST"] = df["_ORDER"] == (df["_SIZE"] - 1)
+    return df
+
+
+def clean_str_compact(x: str) -> str:
+    """Convierte texto a mayúsculas y elimina espacios/tabs/saltos de línea."""
+    return re.sub(r"\s+", "", x.upper().strip()) if isinstance(x, str) else x
+
+
+def apply_filters(df: pd.DataFrame, filters: list) -> pd.DataFrame:
+    """
+    Aplica filtros secuenciales basados en columnas booleanas.
+    Cada elemento de `filters` debe ser el nombre de una columna booleana.
+    """
+    print(df.shape, "inicio")
+    for col in filters:
+        mask_numbers = df.loc[df[col], "NUMBER"].unique()
+        df = df[df["NUMBER"].isin(mask_numbers)]
+        print(df.shape, f"despues {col}")
+        
+    return df
+
+
+
+
