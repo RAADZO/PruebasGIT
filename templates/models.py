@@ -743,7 +743,7 @@ def create_dt_time_wvariants(df_original, cols, logger=logger):
                 df[f"_{date_col}_period"] = df[date_col].dt.to_period('M')
                 df[f"_{date_col}_day_name"] = df[date_col].dt.day_name()
                 df[f"_{date_col}_isnull"] = df[date_col].isnull()
-                df[f"_{date_col}_str"] = df[date_col].dt.strftime('%Y-%m-%d %H:%M')
+                df[f"_{date_col}_str"] = df[date_col].dt.strftime('%Y-%m-%d')
                 logger.info(f"Created datetime variants for columns: {date_col}")
         return df
     except Exception as e:
@@ -3196,9 +3196,9 @@ def clean_close_notes(notes):
             'xxx',
             'xxxx',
             'xxxxx',
-            'thanks',
-            'gracias',
-            'no aplica',
+            # 'thanks',
+            # 'gracias',
+            # 'no aplica',
             '3',
             '',
             ' ',
@@ -3206,7 +3206,7 @@ def clean_close_notes(notes):
             'aaa',
             '2',
             '_',
-            'thank you',
+            # 'thank you',
             'v',
             'zazwimq',
         ],
