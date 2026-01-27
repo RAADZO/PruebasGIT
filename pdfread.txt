@@ -1,0 +1,254 @@
+import re
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import pandas as pd
+
+# -----------------------------
+# Utilidades de limpieza
+# -----------------------------
+_WS = re.compile(r"\s+")
+_EMPTY = re.compile(r"^\s*$")
+
+def _clean_cell(x) -> str:
+    if x is None:
+        return ""
+    s = str(x)
+    s = s.replace("\u00a0", " ")  # non-breaking space
+    s = s.replace("\r", "\n")
+    s = _WS.sub(" ", s).strip()
+    return s
+
+def _drop_empty_rows(df: pd.DataFrame) -> pd.DataFrame:
+    mask = df.apply(lambda r: any(not _EMPTY.match(str(v)) for v in r), axis=1)
+    return df.loc[mask].reset_index(drop=True)
+
+def _maybe_drop_repeated_header(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Si el PDF repite el header en cada página, a veces aparecen filas iguales al header.
+    Detecta si la primera fila se repite y la elimina.
+    """
+    if df.empty or len(df) < 3:
+        return df
+    header = tuple(df.iloc[0].astype(str).tolist())
+    rep = df.apply(lambda r: tuple(r.astype(str).tolist()) == header, axis=1)
+    # si se repite varias veces, elimina repeticiones excepto la primera
+    if rep.sum() >= 2:
+        idx = df.index[rep].tolist()[1:]
+        df = df.drop(index=idx).reset_index(drop=True)
+    return df
+
+def _force_three_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normaliza a exactamente 3 columnas:
+    - Si hay >3 columnas: colapsa extras en la última.
+    - Si hay <3 columnas: intenta split heurístico por dobles espacios / tab / etc.
+    """
+    df = df.copy()
+
+    # Asegura string + limpieza
+    for c in df.columns:
+        df[c] = df[c].map(_clean_cell)
+
+    # Caso A: más de 3 columnas -> colapsa extras
+    if df.shape[1] > 3:
+        cols = list(df.columns)
+        first_two = cols[:2]
+        rest = cols[2:]
+        df = pd.DataFrame({
+            "col1": df[first_two[0]],
+            "col2": df[first_two[1]],
+            "col3": df[rest].astype(str).agg(" ".join, axis=1).map(_clean_cell),
+        })
+
+    # Caso B: menos de 3 columnas -> intenta reconstrucción
+    elif df.shape[1] < 3:
+        # Une todo en una sola línea y divide por heurística
+        if df.shape[1] == 1:
+            s = df.iloc[:, 0].astype(str).map(_clean_cell)
+        else:
+            s = df.astype(str).agg(" ".join, axis=1).map(_clean_cell)
+
+        # Heurística: split por 2+ espacios, o por "  |  " etc.
+        def split3(line: str) -> Tuple[str, str, str]:
+            # intenta separadores “fuertes”
+            parts = re.split(r"\s{2,}|\t+|\s\|\s", line)
+            parts = [p.strip() for p in parts if p.strip()]
+            if len(parts) >= 3:
+                return parts[0], parts[1], " ".join(parts[2:])
+            if len(parts) == 2:
+                return parts[0], "", parts[1]
+            if len(parts) == 1:
+                return parts[0], "", ""
+            return "", "", ""
+
+        rows = [split3(line) for line in s.tolist()]
+        df = pd.DataFrame(rows, columns=["col1", "col2", "col3"])
+
+    else:
+        df.columns = ["col1", "col2", "col3"]
+
+    # Limpieza final
+    df = _drop_empty_rows(df)
+    df = _maybe_drop_repeated_header(df)
+
+    return df
+
+
+# -----------------------------
+# Extractores
+# -----------------------------
+def extract_with_camelot(pdf_path: str,
+                         pages: str = "all",
+                         flavor: str = "lattice") -> List[pd.DataFrame]:
+    """
+    flavor:
+      - lattice: si hay líneas/bordes
+      - stream: si no hay líneas, separación por espacios
+    """
+    import camelot  # lazy import
+
+    tables = camelot.read_pdf(pdf_path, pages=pages, flavor=flavor)
+    dfs = []
+    for t in tables:
+        df = t.df
+        # Camelot suele devolver header como primera fila (strings)
+        # Mantén todo y normaliza luego
+        dfs.append(df)
+    return dfs
+
+def extract_with_pdfplumber(pdf_path: str,
+                            pages: Optional[List[int]] = None) -> List[pd.DataFrame]:
+    import pdfplumber  # lazy import
+
+    dfs = []
+    with pdfplumber.open(pdf_path) as pdf:
+        page_indices = pages if pages is not None else list(range(len(pdf.pages)))
+        for i in page_indices:
+            page = pdf.pages[i]
+            # Ajustes para capturar tablas en PDFs con separadores claros
+            settings = {
+                "vertical_strategy": "lines",
+                "horizontal_strategy": "lines",
+                "intersection_tolerance": 5,
+                "snap_tolerance": 3,
+                "join_tolerance": 3,
+                "edge_min_length": 20,
+                "min_words_vertical": 2,
+                "min_words_horizontal": 1,
+                "keep_blank_chars": False,
+                "text_tolerance": 3,
+            }
+
+            # Primero intenta con líneas
+            tables = page.extract_tables(table_settings=settings)
+
+            # Si no encuentra, intenta modo "texto"
+            if not tables:
+                settings_text = settings.copy()
+                settings_text["vertical_strategy"] = "text"
+                settings_text["horizontal_strategy"] = "text"
+                tables = page.extract_tables(table_settings=settings_text)
+
+            for tbl in tables or []:
+                df = pd.DataFrame(tbl)
+                dfs.append(df)
+
+    return dfs
+
+
+# -----------------------------
+# Pipeline principal
+# -----------------------------
+def extract_3col_tables(pdf_path: str,
+                        pages: str = "all",
+                        prefer_lattice: bool = True) -> pd.DataFrame:
+    """
+    Devuelve un DataFrame concatenado con todas las tablas normalizadas a 3 columnas
+    y con metadata (page/table_idx).
+    """
+    pdf_path = str(pdf_path)
+
+    collected = []
+
+    # 1) Camelot (mejor si las tablas están “bien dibujadas”)
+    camelot_attempts = []
+    if prefer_lattice:
+        camelot_attempts = [("lattice",), ("stream",)]
+    else:
+        camelot_attempts = [("stream",), ("lattice",)]
+
+    for (flavor,) in camelot_attempts:
+        try:
+            dfs = extract_with_camelot(pdf_path, pages=pages, flavor=flavor)
+            if dfs:
+                for idx, df in enumerate(dfs):
+                    norm = _force_three_columns(df)
+                    if not norm.empty:
+                        norm.insert(0, "source", f"camelot_{flavor}")
+                        norm.insert(1, "table_idx", idx)
+                        collected.append(norm)
+                # Si ya sacó “algo decente”, no fuerces fallback
+                if collected:
+                    break
+        except Exception:
+            # si camelot falla por dependencias o PDF raro, seguimos
+            pass
+
+    # 2) Fallback con pdfplumber si Camelot no sacó nada
+    if not collected:
+        try:
+            dfs = extract_with_pdfplumber(pdf_path)
+            for idx, df in enumerate(dfs):
+                norm = _force_three_columns(df)
+                if not norm.empty:
+                    norm.insert(0, "source", "pdfplumber")
+                    norm.insert(1, "table_idx", idx)
+                    collected.append(norm)
+        except Exception as e:
+            raise RuntimeError(f"No se pudo extraer el PDF con camelot ni pdfplumber: {e}")
+
+    if not collected:
+        return pd.DataFrame(columns=["source", "table_idx", "col1", "col2", "col3"])
+
+    out = pd.concat(collected, ignore_index=True)
+    return out
+
+
+# -----------------------------
+# Ejecución / export
+# -----------------------------
+def run(pdf_path: str, out_dir: str = "./out", base_name: Optional[str] = None) -> Path:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    pdf_path = Path(pdf_path)
+    base = base_name or pdf_path.stem
+
+    df = extract_3col_tables(str(pdf_path), pages="all", prefer_lattice=True)
+
+    # Exporta
+    csv_path = out_dir / f"{base}_tables_3col.csv"
+    xlsx_path = out_dir / f"{base}_tables_3col.xlsx"
+    parquet_path = out_dir / f"{base}_tables_3col.parquet"
+
+    df.to_csv(csv_path, index=False, encoding="utf-8")
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name="tables_3col")
+    df.to_parquet(parquet_path, index=False)
+
+    return csv_path
+
+
+if __name__ == "__main__":
+    # Ejemplo:
+    # python extract_pdf_tables.py ./input.pdf
+    import sys
+    if len(sys.argv) < 2:
+        print("Uso: python extract_pdf_tables.py <pdf_path> [out_dir]")
+        raise SystemExit(2)
+
+    pdf = sys.argv[1]
+    out = sys.argv[2] if len(sys.argv) >= 3 else "./out"
+    result = run(pdf, out_dir=out)
+    print(f"OK -> {result}")
