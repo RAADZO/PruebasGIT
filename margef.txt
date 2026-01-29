@@ -1,0 +1,207 @@
+Option Explicit
+
+Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
+    Dim wb As Workbook: Set wb = ThisWorkbook
+    Dim wsParam As Worksheet
+    Dim ids As Object ' Dictionary
+    Dim lastRow As Long, i As Long, idTxt As String
+
+    ' --- Hoja Parametros
+    On Error Resume Next
+    Set wsParam = wb.Worksheets("Parametros")
+    On Error GoTo 0
+
+    If wsParam Is Nothing Then
+        MsgBox "No existe la hoja 'Parametros'. Crea una hoja llamada 'Parametros' y pon los IDs en A2:A.", vbExclamation
+        Exit Sub
+    End If
+
+    ' --- Cargar IDs (en orden)
+    Set ids = CreateObject("Scripting.Dictionary")
+    ids.CompareMode = 1 ' vbTextCompare
+
+    lastRow = wsParam.Cells(wsParam.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox "No hay IDs en 'Parametros'. Pon IDs desde A2 hacia abajo.", vbExclamation
+        Exit Sub
+    End If
+
+    For i = 2 To lastRow
+        idTxt = Trim(CStr(wsParam.Cells(i, "A").Value))
+        If idTxt <> "" Then
+            If Not ids.Exists(idTxt) Then ids.Add idTxt, True
+        End If
+    Next i
+
+    If ids.Count = 0 Then
+        MsgBox "No se cargó ningún ID válido desde 'Parametros'.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Dim k As Variant
+    For Each k In ids.Keys
+        GenerarReporteParaUnID CStr(k), wsParam, wb
+    Next k
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Listo. Se generaron " & ids.Count & " reportes (1 por ID).", vbInformation
+End Sub
+
+
+' =========================
+' Genera 1 hoja reporte para 1 ID
+' =========================
+Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Worksheet, ByVal wb As Workbook)
+    Dim wsOut As Worksheet
+    Dim reportName As String
+    reportName = MakeSafeSheetName("RPT_" & theID)
+
+    Set wsOut = GetOrCreateSheet(wb, reportName)
+    wsOut.Cells.Clear
+
+    ' Cabecera del reporte
+    wsOut.Cells(1, 1).Value = "Report for ID:"
+    wsOut.Cells(1, 2).Value = theID
+    wsOut.Rows(1).Font.Bold = True
+
+    Dim outRow As Long: outRow = 3 ' deja una línea de respiro
+
+    Dim ws As Worksheet, lo As ListObject
+    Dim idCol As Long, c As Long, r As Long
+    Dim colsToExport As Collection
+    Dim headerText As String, hasAnyUnderscore As Boolean
+    Dim matchCount As Long
+    Dim outCol As Long
+    Dim colIdx As Variant
+    Dim idVal As String, h As String
+
+    For Each ws In wb.Worksheets
+        ' saltar Parametros y la propia hoja de salida
+        If ws.Name <> wsParam.Name And ws.Name <> wsOut.Name Then
+
+            For Each lo In ws.ListObjects
+                idCol = FindColumnIndexByHeader(lo, "ID")
+                If idCol = 0 Then GoTo NextTable
+                If lo.DataBodyRange Is Nothing Then GoTo NextTable
+
+                ' Columnas a exportar: ID + "_" headers
+                Set colsToExport = New Collection
+                colsToExport.Add idCol
+                hasAnyUnderscore = False
+
+                For c = 1 To lo.ListColumns.Count
+                    If c <> idCol Then
+                        headerText = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+                        If Len(headerText) > 0 Then
+                            If Left$(headerText, 1) = "_" Then
+                                colsToExport.Add c
+                                hasAnyUnderscore = True
+                            End If
+                        End If
+                    End If
+                Next c
+
+                If Not hasAnyUnderscore Then GoTo NextTable
+
+                ' ¿Cuántas filas matchean el ID?
+                matchCount = 0
+                For r = 1 To lo.DataBodyRange.Rows.Count
+                    idVal = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    If StrComp(idVal, theID, vbTextCompare) = 0 Then matchCount = matchCount + 1
+                Next r
+
+                If matchCount = 0 Then GoTo NextTable
+
+                ' Título bloque
+                wsOut.Cells(outRow, 1).Value = "Sheet: " & ws.Name & " | Table: " & lo.Name & " | Matches: " & matchCount
+                wsOut.Cells(outRow, 1).Font.Bold = True
+                outRow = outRow + 1
+
+                ' Headers
+                outCol = 1
+                For Each colIdx In colsToExport
+                    h = Trim(CStr(lo.HeaderRowRange.Cells(1, CLng(colIdx)).Value))
+                    If Left$(h, 1) = "_" Then h = Mid$(h, 2) ' quita _
+                    wsOut.Cells(outRow, outCol).Value = h
+                    wsOut.Cells(outRow, outCol).Font.Bold = True
+                    outCol = outCol + 1
+                Next colIdx
+                outRow = outRow + 1
+
+                ' Filas
+                For r = 1 To lo.DataBodyRange.Rows.Count
+                    idVal = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    If StrComp(idVal, theID, vbTextCompare) = 0 Then
+                        outCol = 1
+                        For Each colIdx In colsToExport
+                            wsOut.Cells(outRow, outCol).Value = lo.DataBodyRange.Cells(r, CLng(colIdx)).Value
+                            outCol = outCol + 1
+                        Next colIdx
+                        outRow = outRow + 1
+                    End If
+                Next r
+
+                ' 2 filas en blanco entre tablas
+                outRow = outRow + 2
+
+NextTable:
+            Next lo
+        End If
+    Next ws
+
+    wsOut.Columns.AutoFit
+End Sub
+
+
+' --- Encuentra índice de columna por cabecera dentro de la tabla
+Private Function FindColumnIndexByHeader(ByVal lo As ListObject, ByVal headerName As String) As Long
+    Dim c As Long, h As String
+    FindColumnIndexByHeader = 0
+
+    For c = 1 To lo.ListColumns.Count
+        h = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+        If StrComp(h, headerName, vbTextCompare) = 0 Then
+            FindColumnIndexByHeader = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+' --- Crea o devuelve una hoja
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
+
+' --- Limpia nombre de hoja para Excel (máx 31 chars y sin caracteres inválidos)
+Private Function MakeSafeSheetName(ByVal s As String) As String
+    Dim badChars As Variant, ch As Variant
+    badChars = Array(":", "\", "/", "?", "*", "[", "]")
+
+    For Each ch In badChars
+        s = Replace(s, CStr(ch), "_")
+    Next ch
+
+    ' Quitar comillas simples al inicio/fin si aparecen
+    If Left$(s, 1) = "'" Then s = Mid$(s, 2)
+    If Right$(s, 1) = "'" Then s = Left$(s, Len(s) - 1)
+
+    s = Trim$(s)
+    If Len(s) = 0 Then s = "RPT"
+
+    ' Excel limita a 31 caracteres
+    If Len(s) > 31 Then s = Left$(s, 31)
+
+    MakeSafeSheetName = s
+End Function
