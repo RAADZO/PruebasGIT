@@ -3,26 +3,24 @@ Option Explicit
 Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
     Dim wb As Workbook: Set wb = ThisWorkbook
     Dim wsParam As Worksheet
-    Dim ids As Object ' Dictionary
+    Dim ids As Object
     Dim lastRow As Long, i As Long, idTxt As String
 
-    ' --- Hoja Parametros
     On Error Resume Next
     Set wsParam = wb.Worksheets("Parametros")
     On Error GoTo 0
 
     If wsParam Is Nothing Then
-        MsgBox "No existe la hoja 'Parametros'. Crea una hoja llamada 'Parametros' y pon los IDs en A2:A.", vbExclamation
+        MsgBox "No existe la hoja 'Parametros'.", vbExclamation
         Exit Sub
     End If
 
-    ' --- Cargar IDs (en orden)
     Set ids = CreateObject("Scripting.Dictionary")
     ids.CompareMode = 1 ' vbTextCompare
 
     lastRow = wsParam.Cells(wsParam.Rows.Count, "A").End(xlUp).Row
     If lastRow < 2 Then
-        MsgBox "No hay IDs en 'Parametros'. Pon IDs desde A2 hacia abajo.", vbExclamation
+        MsgBox "No hay IDs en 'Parametros' (A2:A).", vbExclamation
         Exit Sub
     End If
 
@@ -34,7 +32,7 @@ Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
     Next i
 
     If ids.Count = 0 Then
-        MsgBox "No se cargó ningún ID válido desde 'Parametros'.", vbExclamation
+        MsgBox "No se cargó ningún ID válido.", vbExclamation
         Exit Sub
     End If
 
@@ -53,9 +51,6 @@ Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
 End Sub
 
 
-' =========================
-' Genera 1 hoja reporte para 1 ID
-' =========================
 Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Worksheet, ByVal wb As Workbook)
     Dim wsOut As Worksheet
     Dim reportName As String
@@ -64,24 +59,23 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
     Set wsOut = GetOrCreateSheet(wb, reportName)
     wsOut.Cells.Clear
 
-    ' Cabecera del reporte
     wsOut.Cells(1, 1).Value = "Report for ID:"
     wsOut.Cells(1, 2).Value = theID
     wsOut.Rows(1).Font.Bold = True
 
-    Dim outRow As Long: outRow = 3 ' deja una línea de respiro
+    Dim outRow As Long: outRow = 3
 
     Dim ws As Worksheet, lo As ListObject
     Dim idCol As Long, c As Long, r As Long
     Dim colsToExport As Collection
-    Dim headerText As String, hasAnyUnderscore As Boolean
+    Dim hasAnyUnderscore As Boolean
     Dim matchCount As Long
     Dim outCol As Long
     Dim colIdx As Variant
-    Dim idVal As String, h As String
+    Dim idVal As String
+    Dim colName As String, headerOut As String
 
     For Each ws In wb.Worksheets
-        ' saltar Parametros y la propia hoja de salida
         If ws.Name <> wsParam.Name And ws.Name <> wsOut.Name Then
 
             For Each lo In ws.ListObjects
@@ -89,16 +83,16 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
                 If idCol = 0 Then GoTo NextTable
                 If lo.DataBodyRange Is Nothing Then GoTo NextTable
 
-                ' Columnas a exportar: ID + "_" headers
+                ' Columnas: ID + solo las que empiezan por "_"
                 Set colsToExport = New Collection
                 colsToExport.Add idCol
                 hasAnyUnderscore = False
 
                 For c = 1 To lo.ListColumns.Count
                     If c <> idCol Then
-                        headerText = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
-                        If Len(headerText) > 0 Then
-                            If Left$(headerText, 1) = "_" Then
+                        colName = Trim$(CStr(lo.ListColumns(c).Name))  ' <-- FIX: nombre robusto
+                        If Len(colName) > 0 Then
+                            If Left$(colName, 1) = "_" Then
                                 colsToExport.Add c
                                 hasAnyUnderscore = True
                             End If
@@ -108,10 +102,10 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
 
                 If Not hasAnyUnderscore Then GoTo NextTable
 
-                ' ¿Cuántas filas matchean el ID?
+                ' Contar matches
                 matchCount = 0
                 For r = 1 To lo.DataBodyRange.Rows.Count
-                    idVal = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    idVal = Trim$(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
                     If StrComp(idVal, theID, vbTextCompare) = 0 Then matchCount = matchCount + 1
                 Next r
 
@@ -122,12 +116,15 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
                 wsOut.Cells(outRow, 1).Font.Bold = True
                 outRow = outRow + 1
 
-                ' Headers
+                ' Headers del bloque (ahora sí salen)
                 outCol = 1
                 For Each colIdx In colsToExport
-                    h = Trim(CStr(lo.HeaderRowRange.Cells(1, CLng(colIdx)).Value))
-                    If Left$(h, 1) = "_" Then h = Mid$(h, 2) ' quita _
-                    wsOut.Cells(outRow, outCol).Value = h
+                    colName = Trim$(CStr(lo.ListColumns(CLng(colIdx)).Name)) ' <-- FIX
+                    headerOut = colName
+                    ' Si quieres quitar el "_" en el reporte, déjalo así:
+                    If Left$(headerOut, 1) = "_" Then headerOut = Mid$(headerOut, 2)
+
+                    wsOut.Cells(outRow, outCol).Value = headerOut
                     wsOut.Cells(outRow, outCol).Font.Bold = True
                     outCol = outCol + 1
                 Next colIdx
@@ -135,7 +132,7 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
 
                 ' Filas
                 For r = 1 To lo.DataBodyRange.Rows.Count
-                    idVal = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    idVal = Trim$(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
                     If StrComp(idVal, theID, vbTextCompare) = 0 Then
                         outCol = 1
                         For Each colIdx In colsToExport
@@ -146,8 +143,7 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
                     End If
                 Next r
 
-                ' 2 filas en blanco entre tablas
-                outRow = outRow + 2
+                outRow = outRow + 2 ' 2 líneas entre tablas
 
 NextTable:
             Next lo
@@ -158,21 +154,20 @@ NextTable:
 End Sub
 
 
-' --- Encuentra índice de columna por cabecera dentro de la tabla
 Private Function FindColumnIndexByHeader(ByVal lo As ListObject, ByVal headerName As String) As Long
-    Dim c As Long, h As String
+    Dim c As Long, nm As String
     FindColumnIndexByHeader = 0
 
+    ' Mejor buscar por el nombre real de la columna (ListColumns.Name)
     For c = 1 To lo.ListColumns.Count
-        h = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
-        If StrComp(h, headerName, vbTextCompare) = 0 Then
+        nm = Trim$(CStr(lo.ListColumns(c).Name))
+        If StrComp(nm, headerName, vbTextCompare) = 0 Then
             FindColumnIndexByHeader = c
             Exit Function
         End If
     Next c
 End Function
 
-' --- Crea o devuelve una hoja
 Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
     On Error Resume Next
     Set GetOrCreateSheet = wb.Worksheets(sheetName)
@@ -184,7 +179,6 @@ Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As Strin
     End If
 End Function
 
-' --- Limpia nombre de hoja para Excel (máx 31 chars y sin caracteres inválidos)
 Private Function MakeSafeSheetName(ByVal s As String) As String
     Dim badChars As Variant, ch As Variant
     badChars = Array(":", "\", "/", "?", "*", "[", "]")
@@ -193,14 +187,8 @@ Private Function MakeSafeSheetName(ByVal s As String) As String
         s = Replace(s, CStr(ch), "_")
     Next ch
 
-    ' Quitar comillas simples al inicio/fin si aparecen
-    If Left$(s, 1) = "'" Then s = Mid$(s, 2)
-    If Right$(s, 1) = "'" Then s = Left$(s, Len(s) - 1)
-
     s = Trim$(s)
     If Len(s) = 0 Then s = "RPT"
-
-    ' Excel limita a 31 caracteres
     If Len(s) > 31 Then s = Left$(s, 31)
 
     MakeSafeSheetName = s
