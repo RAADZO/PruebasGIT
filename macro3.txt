@@ -1,0 +1,141 @@
+Option Explicit
+
+Public Sub ConsolidarPorID_Vertical_SoloGuionBajo_ConSeparaciones()
+    Dim wb As Workbook: Set wb = ThisWorkbook
+    Dim wsParam As Worksheet, wsOut As Worksheet
+    Dim ids As Object ' Dictionary
+    
+    ' --- Hoja Parametros
+    On Error Resume Next
+    Set wsParam = wb.Worksheets("Parametros")
+    On Error GoTo 0
+    
+    If wsParam Is Nothing Then
+        MsgBox "No existe la hoja 'Parametros'. Crea una hoja llamada 'Parametros' y pon los IDs en A2:A.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' --- Cargar IDs
+    Set ids = CreateObject("Scripting.Dictionary")
+    ids.CompareMode = 1 ' vbTextCompare
+    
+    Dim lastRow As Long, i As Long, idTxt As String
+    lastRow = wsParam.Cells(wsParam.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox "No hay IDs en 'Parametros'. Pon IDs desde A2 hacia abajo.", vbExclamation
+        Exit Sub
+    End If
+    
+    For i = 2 To lastRow
+        idTxt = Trim(CStr(wsParam.Cells(i, "A").Value))
+        If idTxt <> "" Then ids(idTxt) = True
+    Next i
+    
+    If ids.Count = 0 Then
+        MsgBox "No se cargó ningún ID válido desde 'Parametros'.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' --- Preparar salida
+    Set wsOut = GetOrCreateSheet(wb, "Consolidado_Vertical")
+    wsOut.Cells.Clear
+    
+    ' Encabezados del reporte (vertical)
+    wsOut.Range("A1:F1").Value = Array("ID", "Hoja", "Tabla", "Row#", "Campo", "Valor")
+    wsOut.Rows(1).Font.Bold = True
+    
+    Dim outRow As Long: outRow = 2
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Dim ws As Worksheet, lo As ListObject
+    Dim idCol As Long, r As Long, c As Long
+    Dim idVal As String, hdr As String, fieldName As String
+    Dim foundInThisTable As Boolean
+    Dim anyExportedFromThisTable As Boolean
+    
+    For Each ws In wb.Worksheets
+        If ws.Name <> wsParam.Name And ws.Name <> wsOut.Name Then
+            
+            For Each lo In ws.ListObjects
+                idCol = FindColumnIndexByHeader(lo, "ID")
+                If idCol > 0 Then
+                    If Not lo.DataBodyRange Is Nothing Then
+                        
+                        foundInThisTable = False
+                        
+                        For r = 1 To lo.DataBodyRange.Rows.Count
+                            idVal = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                            
+                            If ids.Exists(idVal) Then
+                                ' Esta tabla tiene al menos una coincidencia
+                                foundInThisTable = True
+                                
+                                ' Exportar SOLO columnas con '_' al inicio del header
+                                For c = 1 To lo.ListColumns.Count
+                                    If c <> idCol Then
+                                        hdr = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+                                        If Len(hdr) > 0 Then
+                                            If Left$(hdr, 1) = "_" Then
+                                                fieldName = Trim$(Mid$(hdr, 2)) ' quita _
+                                                If fieldName <> "" Then
+                                                    wsOut.Cells(outRow, 1).Value = idVal
+                                                    wsOut.Cells(outRow, 2).Value = ws.Name
+                                                    wsOut.Cells(outRow, 3).Value = lo.Name
+                                                    wsOut.Cells(outRow, 4).Value = r ' Row# dentro de la tabla
+                                                    wsOut.Cells(outRow, 5).Value = fieldName
+                                                    wsOut.Cells(outRow, 6).Value = lo.DataBodyRange.Cells(r, c).Value
+                                                    outRow = outRow + 1
+                                                End If
+                                            End If
+                                        End If
+                                    End If
+                                Next c
+                            End If
+                        Next r
+                        
+                        ' Si hubo resultados en esta tabla, dejar 2 filas en blanco
+                        If foundInThisTable Then
+                            outRow = outRow + 2
+                        End If
+                        
+                    End If
+                End If
+            Next lo
+        End If
+    Next ws
+    
+    wsOut.Columns("A:F").AutoFit
+    
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    
+    MsgBox "Listo. Filas escritas (incluye huecos): " & (outRow - 2), vbInformation
+End Sub
+
+' --- Encuentra índice de columna por cabecera dentro de la tabla
+Private Function FindColumnIndexByHeader(ByVal lo As ListObject, ByVal headerName As String) As Long
+    Dim c As Long, h As String
+    FindColumnIndexByHeader = 0
+    
+    For c = 1 To lo.ListColumns.Count
+        h = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+        If StrComp(h, headerName, vbTextCompare) = 0 Then
+            FindColumnIndexByHeader = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+' --- Crea o devuelve una hoja
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
