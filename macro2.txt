@@ -1,0 +1,177 @@
+Option Explicit
+
+Public Sub ConsolidarPorID_Ancho_SoloGuionBajo()
+    Dim wb As Workbook: Set wb = ThisWorkbook
+    Dim wsParam As Worksheet, wsOut As Worksheet
+    Dim ids As Object              ' Dictionary: IDs a buscar
+    Dim dictRow As Object          ' Dictionary: ID -> fila salida
+    Dim dictCol As Object          ' Dictionary: header -> col salida
+    Dim dictOcc As Object          ' Dictionary: ID|headerBase -> contador
+    
+    ' --- Hoja Parametros
+    On Error Resume Next
+    Set wsParam = wb.Worksheets("Parametros")
+    On Error GoTo 0
+    
+    If wsParam Is Nothing Then
+        MsgBox "No existe la hoja 'Parametros'. Crea una hoja llamada 'Parametros' y pon los IDs en A2:A.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' --- Cargar IDs
+    Set ids = CreateObject("Scripting.Dictionary")
+    ids.CompareMode = 1 ' vbTextCompare
+    
+    Dim lastRow As Long, i As Long, idTxt As String
+    lastRow = wsParam.Cells(wsParam.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox "No hay IDs en 'Parametros'. Pon IDs desde A2 hacia abajo.", vbExclamation
+        Exit Sub
+    End If
+    
+    For i = 2 To lastRow
+        idTxt = Trim(CStr(wsParam.Cells(i, "A").Value))
+        If idTxt <> "" Then ids(idTxt) = True
+    Next i
+    
+    If ids.Count = 0 Then
+        MsgBox "No se cargó ningún ID válido desde 'Parametros'.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' --- Salida
+    Set wsOut = GetOrCreateSheet(wb, "Consolidado_Ancho_Resumen")
+    wsOut.Cells.Clear
+    
+    Set dictRow = CreateObject("Scripting.Dictionary")
+    dictRow.CompareMode = 1
+    
+    Set dictCol = CreateObject("Scripting.Dictionary")
+    dictCol.CompareMode = 1
+    
+    Set dictOcc = CreateObject("Scripting.Dictionary")
+    dictOcc.CompareMode = 1
+    
+    wsOut.Cells(1, 1).Value = "ID"
+    dictCol("ID") = 1
+    
+    Dim outNextRow As Long: outNextRow = 2
+    Dim outNextCol As Long: outNextCol = 2
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Dim ws As Worksheet, lo As ListObject
+    Dim idCol As Long, r As Long, c As Long
+    Dim idVal As String
+    Dim hdr As String, fieldName As String
+    Dim headerBase As String, headerFinal As String
+    Dim occKey As String, occNum As Long
+    Dim cellVal As Variant
+    
+    For Each ws In wb.Worksheets
+        If ws.Name <> wsParam.Name And ws.Name <> wsOut.Name Then
+            
+            For Each lo In ws.ListObjects
+                idCol = FindColumnIndexByHeader(lo, "ID")
+                
+                If idCol > 0 Then
+                    If Not lo.DataBodyRange Is Nothing Then
+                        
+                        For r = 1 To lo.DataBodyRange.Rows.Count
+                            idVal = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                            
+                            If ids.Exists(idVal) Then
+                                ' Asegurar fila del ID
+                                If Not dictRow.Exists(idVal) Then
+                                    dictRow(idVal) = outNextRow
+                                    wsOut.Cells(outNextRow, dictCol("ID")).Value = idVal
+                                    outNextRow = outNextRow + 1
+                                End If
+                                
+                                ' Volcar SOLO columnas cuyo header empieza por "_"
+                                For c = 1 To lo.ListColumns.Count
+                                    If c <> idCol Then
+                                        hdr = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+                                        
+                                        If Len(hdr) > 0 Then
+                                            If Left$(hdr, 1) = "_" Then
+                                                ' nombre de campo sin el guion bajo para el reporte
+                                                fieldName = Mid$(hdr, 2)
+                                                If Len(Trim$(fieldName)) = 0 Then GoTo NextCol ' evita headers "_" vacíos
+                                                
+                                                headerBase = ws.Name & "." & lo.Name & "." & Trim$(fieldName)
+                                                cellVal = lo.DataBodyRange.Cells(r, c).Value
+                                                
+                                                ' ocurrencias por (ID, headerBase)
+                                                occKey = idVal & "|" & headerBase
+                                                If Not dictOcc.Exists(occKey) Then
+                                                    dictOcc(occKey) = 1
+                                                Else
+                                                    dictOcc(occKey) = CLng(dictOcc(occKey)) + 1
+                                                End If
+                                                occNum = CLng(dictOcc(occKey))
+                                                
+                                                If occNum = 1 Then
+                                                    headerFinal = headerBase
+                                                Else
+                                                    headerFinal = headerBase & "#" & occNum
+                                                End If
+                                                
+                                                ' asegurar columna
+                                                If Not dictCol.Exists(headerFinal) Then
+                                                    dictCol(headerFinal) = outNextCol
+                                                    wsOut.Cells(1, outNextCol).Value = headerFinal
+                                                    outNextCol = outNextCol + 1
+                                                End If
+                                                
+                                                ' escribir valor
+                                                wsOut.Cells(dictRow(idVal), dictCol(headerFinal)).Value = cellVal
+                                            End If
+                                        End If
+                                    End If
+NextCol:
+                                Next c
+                            End If
+                        Next r
+                    End If
+                End If
+            Next lo
+        End If
+    Next ws
+    
+    wsOut.Rows(1).Font.Bold = True
+    wsOut.Columns.AutoFit
+    
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    
+    MsgBox "Listo (resumen por '_'). IDs consolidados: " & dictRow.Count & vbCrLf & _
+           "Columnas creadas: " & (outNextCol - 1), vbInformation
+End Sub
+
+' --- Encuentra índice de columna por cabecera dentro de la tabla
+Private Function FindColumnIndexByHeader(ByVal lo As ListObject, ByVal headerName As String) As Long
+    Dim c As Long, h As String
+    FindColumnIndexByHeader = 0
+    
+    For c = 1 To lo.ListColumns.Count
+        h = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+        If StrComp(h, headerName, vbTextCompare) = 0 Then
+            FindColumnIndexByHeader = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+' --- Crea o devuelve una hoja
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
