@@ -1,6 +1,6 @@
 Option Explicit
 
-Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
+Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo_FIX()
     Dim wb As Workbook: Set wb = ThisWorkbook
     Dim wsParam As Worksheet
     Dim ids As Object
@@ -11,7 +11,7 @@ Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
     On Error GoTo 0
 
     If wsParam Is Nothing Then
-        MsgBox "No existe la hoja 'Parametros'.", vbExclamation
+        MsgBox "No existe la hoja 'Parametros'. Pon los IDs en A2:A.", vbExclamation
         Exit Sub
     End If
 
@@ -25,7 +25,7 @@ Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
     End If
 
     For i = 2 To lastRow
-        idTxt = Trim(CStr(wsParam.Cells(i, "A").Value))
+        idTxt = CleanHeaderText(wsParam.Cells(i, "A").Value)
         If idTxt <> "" Then
             If Not ids.Exists(idTxt) Then ids.Add idTxt, True
         End If
@@ -41,7 +41,7 @@ Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
 
     Dim k As Variant
     For Each k In ids.Keys
-        GenerarReporteParaUnID CStr(k), wsParam, wb
+        GenerarReporteParaUnID_FIX CStr(k), wsParam, wb
     Next k
 
     Application.EnableEvents = True
@@ -51,7 +51,7 @@ Public Sub ReportePorCadaID_BloquesTablas_SoloGuionBajo()
 End Sub
 
 
-Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Worksheet, ByVal wb As Workbook)
+Private Sub GenerarReporteParaUnID_FIX(ByVal theID As String, ByVal wsParam As Worksheet, ByVal wb As Workbook)
     Dim wsOut As Worksheet
     Dim reportName As String
     reportName = MakeSafeSheetName("RPT_" & theID)
@@ -73,39 +73,38 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
     Dim outCol As Long
     Dim colIdx As Variant
     Dim idVal As String
-    Dim colName As String, headerOut As String
+    Dim hdr As String, headerOut As String
 
     For Each ws In wb.Worksheets
         If ws.Name <> wsParam.Name And ws.Name <> wsOut.Name Then
 
             For Each lo In ws.ListObjects
-                idCol = FindColumnIndexByHeader(lo, "ID")
-                If idCol = 0 Then GoTo NextTable
                 If lo.DataBodyRange Is Nothing Then GoTo NextTable
 
-                ' Columnas: ID + solo las que empiezan por "_"
+                idCol = FindIDColumnIndex(lo) ' <-- robusto
+                If idCol = 0 Then GoTo NextTable
+
+                ' Columnas a exportar: ID + columnas cuyo header empieza por "_"
                 Set colsToExport = New Collection
                 colsToExport.Add idCol
                 hasAnyUnderscore = False
 
                 For c = 1 To lo.ListColumns.Count
                     If c <> idCol Then
-                        colName = Trim$(CStr(lo.ListColumns(c).Name))  ' <-- FIX: nombre robusto
-                        If Len(colName) > 0 Then
-                            If Left$(colName, 1) = "_" Then
-                                colsToExport.Add c
-                                hasAnyUnderscore = True
-                            End If
+                        hdr = GetHeaderText(lo, c)   ' <-- robusto
+                        If StartsWithUnderscore(hdr) Then
+                            colsToExport.Add c
+                            hasAnyUnderscore = True
                         End If
                     End If
                 Next c
 
                 If Not hasAnyUnderscore Then GoTo NextTable
 
-                ' Contar matches
+                ' Contar filas que matchean el ID
                 matchCount = 0
                 For r = 1 To lo.DataBodyRange.Rows.Count
-                    idVal = Trim$(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    idVal = CleanHeaderText(lo.DataBodyRange.Cells(r, idCol).Value)
                     If StrComp(idVal, theID, vbTextCompare) = 0 Then matchCount = matchCount + 1
                 Next r
 
@@ -116,13 +115,13 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
                 wsOut.Cells(outRow, 1).Font.Bold = True
                 outRow = outRow + 1
 
-                ' Headers del bloque (ahora sí salen)
+                ' Headers del bloque (AHORA sí: de cada tabla)
                 outCol = 1
                 For Each colIdx In colsToExport
-                    colName = Trim$(CStr(lo.ListColumns(CLng(colIdx)).Name)) ' <-- FIX
-                    headerOut = colName
-                    ' Si quieres quitar el "_" en el reporte, déjalo así:
-                    If Left$(headerOut, 1) = "_" Then headerOut = Mid$(headerOut, 2)
+                    hdr = GetHeaderText(lo, CLng(colIdx))
+                    headerOut = hdr
+                    ' Quita "_" en el reporte para que quede limpio (si quieres conservarlo, comenta esta línea)
+                    If StartsWithUnderscore(headerOut) Then headerOut = Mid$(CleanHeaderText(headerOut), 2)
 
                     wsOut.Cells(outRow, outCol).Value = headerOut
                     wsOut.Cells(outRow, outCol).Font.Bold = True
@@ -130,9 +129,9 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
                 Next colIdx
                 outRow = outRow + 1
 
-                ' Filas
+                ' Filas del bloque
                 For r = 1 To lo.DataBodyRange.Rows.Count
-                    idVal = Trim$(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    idVal = CleanHeaderText(lo.DataBodyRange.Cells(r, idCol).Value)
                     If StrComp(idVal, theID, vbTextCompare) = 0 Then
                         outCol = 1
                         For Each colIdx In colsToExport
@@ -143,7 +142,7 @@ Private Sub GenerarReporteParaUnID(ByVal theID As String, ByVal wsParam As Works
                     End If
                 Next r
 
-                outRow = outRow + 2 ' 2 líneas entre tablas
+                outRow = outRow + 2 ' 2 filas en blanco entre tablas
 
 NextTable:
             Next lo
@@ -154,18 +153,62 @@ NextTable:
 End Sub
 
 
-Private Function FindColumnIndexByHeader(ByVal lo As ListObject, ByVal headerName As String) As Long
-    Dim c As Long, nm As String
-    FindColumnIndexByHeader = 0
+' ===== Helpers robustos =====
 
-    ' Mejor buscar por el nombre real de la columna (ListColumns.Name)
+' Devuelve el texto del encabezado: primero HeaderRowRange, si no ListColumns.Name
+Private Function GetHeaderText(ByVal lo As ListObject, ByVal colIndex As Long) As String
+    Dim h As String
+    h = ""
+
+    On Error Resume Next
+    h = CStr(lo.HeaderRowRange.Cells(1, colIndex).Value)
+    On Error GoTo 0
+
+    h = CleanHeaderText(h)
+
+    If h = "" Then
+        h = CleanHeaderText(lo.ListColumns(colIndex).Name)
+    End If
+
+    GetHeaderText = h
+End Function
+
+' Encuentra columna ID buscando por ambas fuentes
+Private Function FindIDColumnIndex(ByVal lo As ListObject) As Long
+    Dim c As Long, h As String
+    FindIDColumnIndex = 0
+
     For c = 1 To lo.ListColumns.Count
-        nm = Trim$(CStr(lo.ListColumns(c).Name))
-        If StrComp(nm, headerName, vbTextCompare) = 0 Then
-            FindColumnIndexByHeader = c
+        h = GetHeaderText(lo, c)
+        If StrComp(h, "ID", vbTextCompare) = 0 Then
+            FindIDColumnIndex = c
             Exit Function
         End If
     Next c
+End Function
+
+' Limpia espacios y caracteres invisibles comunes
+Private Function CleanHeaderText(ByVal v As Variant) As String
+    Dim s As String
+    s = Trim$(CStr(v))
+
+    ' quitar NBSP (char 160) y tab/saltos
+    s = Replace(s, ChrW(160), " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+
+    ' compactar dobles espacios
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+
+    CleanHeaderText = Trim$(s)
+End Function
+
+Private Function StartsWithUnderscore(ByVal s As String) As Boolean
+    s = CleanHeaderText(s)
+    StartsWithUnderscore = (Len(s) > 0 And Left$(s, 1) = "_")
 End Function
 
 Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
