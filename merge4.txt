@@ -1,0 +1,167 @@
+Option Explicit
+
+Public Sub ReportePorTablas_FiltradoIDs_SoloGuionBajo()
+    Dim wb As Workbook: Set wb = ThisWorkbook
+    Dim wsParam As Worksheet, wsOut As Worksheet
+    Dim ids As Object ' Dictionary
+    
+    ' --- Parametros
+    On Error Resume Next
+    Set wsParam = wb.Worksheets("Parametros")
+    On Error GoTo 0
+    
+    If wsParam Is Nothing Then
+        MsgBox "No existe la hoja 'Parametros'. Crea una hoja llamada 'Parametros' y pon los IDs en A2:A.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' --- Cargar IDs
+    Set ids = CreateObject("Scripting.Dictionary")
+    ids.CompareMode = 1 ' vbTextCompare
+    
+    Dim lastRow As Long, i As Long, idTxt As String
+    lastRow = wsParam.Cells(wsParam.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox "No hay IDs en 'Parametros'. Pon IDs desde A2 hacia abajo.", vbExclamation
+        Exit Sub
+    End If
+    
+    For i = 2 To lastRow
+        idTxt = Trim(CStr(wsParam.Cells(i, "A").Value))
+        If idTxt <> "" Then ids(idTxt) = True
+    Next i
+    
+    If ids.Count = 0 Then
+        MsgBox "No se cargó ningún ID válido desde 'Parametros'.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' --- Salida
+    Set wsOut = GetOrCreateSheet(wb, "Reporte_Tablas")
+    wsOut.Cells.Clear
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Dim outRow As Long: outRow = 1
+    
+    Dim ws As Worksheet, lo As ListObject
+    Dim idCol As Long
+    Dim colsToExport As Collection ' indices de columnas a exportar (en orden)
+    Dim c As Long, r As Long
+    
+    Dim headerText As String
+    Dim hasAnyUnderscore As Boolean
+    
+    For Each ws In wb.Worksheets
+        If ws.Name <> wsParam.Name And ws.Name <> wsOut.Name Then
+            
+            For Each lo In ws.ListObjects
+                idCol = FindColumnIndexByHeader(lo, "ID")
+                If idCol = 0 Then GoTo NextTable
+                
+                If lo.DataBodyRange Is Nothing Then GoTo NextTable
+                
+                ' --- Determinar columnas a exportar: ID + headers que empiezan con "_"
+                Set colsToExport = New Collection
+                colsToExport.Add idCol ' siempre ID primero
+                hasAnyUnderscore = False
+                
+                For c = 1 To lo.ListColumns.Count
+                    If c <> idCol Then
+                        headerText = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+                        If Len(headerText) > 0 Then
+                            If Left$(headerText, 1) = "_" Then
+                                colsToExport.Add c
+                                hasAnyUnderscore = True
+                            End If
+                        End If
+                    End If
+                Next c
+                
+                ' Si no hay columnas "_" (aparte de ID), no tiene sentido exportar bloque
+                If Not hasAnyUnderscore Then GoTo NextTable
+                
+                ' --- Filtrar filas que matchean IDs (y contar cuántas)
+                Dim matchCount As Long: matchCount = 0
+                For r = 1 To lo.DataBodyRange.Rows.Count
+                    idTxt = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    If ids.Exists(idTxt) Then matchCount = matchCount + 1
+                Next r
+                
+                If matchCount = 0 Then GoTo NextTable
+                
+                ' --- (Opcional) título del bloque
+                wsOut.Cells(outRow, 1).Value = "Sheet: " & ws.Name & " | Table: " & lo.Name
+                wsOut.Cells(outRow, 1).Font.Bold = True
+                outRow = outRow + 1
+                
+                ' --- Escribir headers del bloque
+                Dim outCol As Long: outCol = 1
+                Dim colIdx As Variant, h As String
+                
+                For Each colIdx In colsToExport
+                    h = Trim(CStr(lo.HeaderRowRange.Cells(1, CLng(colIdx)).Value))
+                    ' Si header empieza con "_", quitarlo en el reporte (más limpio)
+                    If Left$(h, 1) = "_" Then h = Mid$(h, 2)
+                    wsOut.Cells(outRow, outCol).Value = h
+                    wsOut.Cells(outRow, outCol).Font.Bold = True
+                    outCol = outCol + 1
+                Next colIdx
+                outRow = outRow + 1
+                
+                ' --- Escribir filas del bloque (solo las que matchean IDs)
+                Dim rr As Long
+                For r = 1 To lo.DataBodyRange.Rows.Count
+                    idTxt = Trim(CStr(lo.DataBodyRange.Cells(r, idCol).Value))
+                    If ids.Exists(idTxt) Then
+                        outCol = 1
+                        For Each colIdx In colsToExport
+                            wsOut.Cells(outRow, outCol).Value = lo.DataBodyRange.Cells(r, CLng(colIdx)).Value
+                            outCol = outCol + 1
+                        Next colIdx
+                        outRow = outRow + 1
+                    End If
+                Next r
+                
+                ' --- Dos filas en blanco entre tablas
+                outRow = outRow + 2
+                
+NextTable:
+            Next lo
+        End If
+    Next ws
+    
+    wsOut.Columns.AutoFit
+    
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    
+    MsgBox "Listo. Reporte generado en 'Reporte_Tablas'.", vbInformation
+End Sub
+
+' --- Encuentra índice de columna por cabecera dentro de la tabla
+Private Function FindColumnIndexByHeader(ByVal lo As ListObject, ByVal headerName As String) As Long
+    Dim c As Long, h As String
+    FindColumnIndexByHeader = 0
+    
+    For c = 1 To lo.ListColumns.Count
+        h = Trim(CStr(lo.HeaderRowRange.Cells(1, c).Value))
+        If StrComp(h, headerName, vbTextCompare) = 0 Then
+            FindColumnIndexByHeader = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+' --- Crea o devuelve una hoja
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
